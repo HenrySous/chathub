@@ -1,43 +1,58 @@
-import socket
-import threading
+import asyncio
+import websockets
+import json
+from datetime import datetime
 
-HOST = "0.0.0.0"
-PORT = 5000
+clientes = {}  # websocket -> nome
+historico = []
 
-server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-server.bind((HOST, PORT))
-server.listen()
-
-clients = []
-
-def broadcast(msg, conn):
-    for client in clients:
-        if client != conn:
+async def broadcast(mensagem, excluir=None):
+    for ws in list(clientes):
+        if ws != excluir:
             try:
-                client.send(msg)
+                await ws.send(mensagem)
             except:
-                clients.remove(client)
+                clientes.pop(ws, None)
 
-def handle_client(conn):
-    while True:
-        try:
-            msg = conn.recv(1024)
-            broadcast(msg, conn)
-        except:
-            clients.remove(conn)
-            conn.close()
-            break
+async def handler(ws):
+    nome = await ws.recv()
+    clientes[ws] = nome
 
-print("Servidor rodando...")
+    hora = datetime.now().strftime("%H:%M")
+    print(f"[{hora}] {nome} entrou | {len(clientes)} online")
 
-while True:
-    conn, addr = server.accept()
+    # Manda histórico pra quem entrou
+    for msg in historico:
+        await ws.send(msg)
 
-    # primeiro dado enviado = nome do usuário
-    name = conn.recv(1024).decode()
-    print(f"{name} entrou de {addr}")
+    entrada = json.dumps({"sistema": f">>> {nome} entrou no chat"})
+    await broadcast(entrada)
 
-    clients.append(conn)
+    try:
+        async for texto in ws:
+            hora = datetime.now().strftime("%H:%M")
+            msg = json.dumps({"nome": nome, "texto": texto, "hora": hora})
+            historico.append(msg)
+            if len(historico) > 100:
+                historico.pop(0)
+            print(f"[{hora}] {nome}: {texto}")
+            await broadcast(msg)
+    except websockets.exceptions.ConnectionClosed:
+        pass
+    finally:
+        clientes.pop(ws, None)
+        hora = datetime.now().strftime("%H:%M")
+        print(f"[{hora}] {nome} saiu | {len(clientes)} online")
+        saida = json.dumps({"sistema": f"<<< {nome} saiu do chat"})
+        await broadcast(saida)
 
-    thread = threading.Thread(target=handle_client, args=(conn,))
-    thread.start()
+async def main():
+    print("=" * 40)
+    print("  UniChat - Servidor rodando!")
+    print("  Porta: 8765")
+    print("  Ctrl+C para encerrar")
+    print("=" * 40)
+    async with websockets.serve(handler, "0.0.0.0", 8765):
+        await asyncio.Future()
+
+asyncio.run(main())
